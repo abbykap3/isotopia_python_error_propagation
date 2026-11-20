@@ -219,6 +219,10 @@ class State:
     yieldnat: TimeArrays = field(default_factory=TimeArrays)
     reaction_ratenat: Defaulted = field(default_factory=lambda: Defaulted(S(0)))
 
+    # Not in the Fortran: the energy grid and weights of the reaction-rate integral,
+    # kept by rates._reactionrates for the cross-section uncertainty (xs_uncertainty.RateGrid)
+    rate_grid: object = None
+
     def write(self, line: str = "") -> None:
         """Write one record to standard output (Fortran unit *)."""
         self.out.write(line + "\n")
