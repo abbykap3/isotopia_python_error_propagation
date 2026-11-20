@@ -1,0 +1,20 @@
+{
+  "_about": "Settings for isotopia_py/xs_uncertainty.py. Keys starting with '_' are comments. See docs/xs_uncertainty.md, section 'Inputs you must give'.",
+
+  "_tendl_relative": "USER INPUT 1. Default 1-sigma relative uncertainty (0.30 = 30%) of a TENDL (model-only) cross section, and of IAEA files outside their evaluated range. null = not chosen yet: those channels add nothing and results are flagged LOWER BOUND.",
+  "tendl_relative": {"charged": null, "neutron": null, "photon": null},
+
+  "_energy_correlation": "Correlation between the energies of one channel: 'full' (cautious default), 'none' (diagnostic only) or 'exponential' with correlation_length in MeV.",
+  "energy_correlation": "full",
+  "correlation_length": 2.0,
+
+  "_channel_correlation": "USER INPUT 2. Correlation between different channels, 0 (independent) to 1.",
+  "channel_correlation": 0.0,
+
+  "_comparison_sigma": "USER INPUT 3. Route A beats route B when ln(N_A/N_B) is larger than this many standard deviations; otherwise they tie.",
+  "comparison_sigma": 2.0,
+
+  "_numerics": "Finite-difference step for sensitivities, and the allowed mismatch between the rebuilt rate and the port's rate.",
+  "fd_step": 1e-4,
+  "selfcheck_tolerance": 1e-3
+}
