@@ -31,23 +31,31 @@ one `State` object instead of global arrays.
 | `isotopia_py/decaylib.py` | – (new) | every decay mode, branching ratio and daughter isomeric state from the same decay files |
 | `isotopia_py/matrix.py` | – (new) | general Bateman solver N(t) = exp(Mt) N(0): decay network plus reaction terms |
 | `isotopia_py/irradiation.py` | – (new) | irradiation + cooling of a target with the matrix solver, rates taken from a port run |
+| `isotopia_py/daughters.py` | `reactionrates.f90` (weights) | reactions on products (multiple hits) inside an A/Z window, rates from the target's energy grid and weights |
 | `isotopia_py/isotopia_compat.py` | `equations.f90` | ISOTOPIA-compatible mode: the port's equations, defects included, as one matrix exponential (for validation) |
 | `isotopia_py/srim.py`, `isotopia_py/srim_tables/` | – (new) | SRIM stopping tables for `p`, `d`, `t`, `h` and `a` in the 92 elements from H to U, converted to MeV/cm; the default stopping power (see items 7 and 9 below) |
 | `isotopia_py/energyloss.py` | – (new) | energy loss through a layer: thickness from (E_in, E_out) and exit energy from (E_in, thickness); used for the `thickness` input (see items 8 and 9 below) |
 
 ## Setup
 
-Python 3.10+ with NumPy (and SciPy for `matrix.py`). The port needs ISOTOPIA's `files/` folder (abundances, decay
-data, neutron and photon spectra) and the cross-section library. It can stand alone, with
-both inside this repository:
+Python 3.10+ with NumPy (and SciPy for `matrix.py`). The port needs ISOTOPIA's `files/` folder
+(abundances, decay data, neutron and photon spectra) and the cross-section library. It stands
+alone: `files/` and `samples/` are part of this repository, and only the library has to be
+downloaded into it:
 
 ```text
 isotopia_python/        # this repository
 ├── isotopia_py/        # the code, with the SRIM tables in isotopia_py/srim_tables/
-├── files/              # copied from the Fortran repository (abundance/, decay/, ...)
-├── samples/            # optional, copied from the Fortran repository, for the sample tests
+├── files/              # ISOTOPIA data: abundance/, decay/, neutron_spectra/, photon_spectra/
+├── samples/            # the 21 ISOTOPIA sample cases with Fortran reference outputs (org/)
 └── isotopia.libs/      # github.com/arjankoning1/isotopia.libs (about 5 GB, 800 000 files)
 ```
+
+`files/` and `samples/` are copied unchanged from the team's Fortran repository,
+[MIDAS-22-033/isotopia_midas](https://github.com/MIDAS-22-033/isotopia_midas) (commit
+`640f478`), which carries the original ISOTOPIA data and samples by A. J. Koning under the
+MIT licence. The sample references (`samples/*/org`) are its fixed Fortran outputs; never
+edit them.
 
 Get the library once, from inside this repository (it is in `.gitignore` and is never
 committed):
@@ -95,8 +103,8 @@ Nuclides are keyed `(Z, A, isomer)` with isomer `-1` = total, `0` = ground state
 a vector and solves dN/dt = M N exactly with a matrix exponential (manual
 Eq. 4.1), so the time grid only chooses output points. M holds every decay
 branch (isomeric transitions, chains of any length, read by `decaylib.py`)
-and, during irradiation, the reactions on the target. Products are not hit
-again yet. The main ISOTOPIA run does not use it.
+and, during irradiation, the reactions on the target and, optionally, on its
+products inside an A/Z window. The main ISOTOPIA run does not use it.
 
 Decay only:
 
@@ -127,19 +135,40 @@ library stops the run with the file and nuclide; pass `on_missing="warn"` to
 keep it as a chain end with a warning. For a natural target, `run` keeps only
 the last isotope, so `from_state` has to be called per isotope.
 
+Multiple hits: every nuclide inside an A/Z window around the target that has
+cross sections in the library is hit too. Its rates are ISOTOPIA's own sum
+over the energy grid and weights (rebuilt from the port and checked against
+every target rate), applied to its library files:
+
+```python
+from isotopia_py.daughters import Window, irradiate_with_hits
+inv = irradiate_with_hits(st, Window(A_below=8, A_above=2, Z_below=3, Z_above=2))
+inv[(43, 98, 0)]               # Tc-98, made only by second hits at 12-16 MeV
+inv[(0, 0, 0)]                 # atoms that left the window ("outside_window")
+```
+
+Hit nuclides deplete the way ISOTOPIA actually depletes the target: at the
+non-elastic rate for charged particles and photons, and at the total cross
+section (elastic included) for neutrons with self-shielding. The library has unstable nuclides as targets only if they live about
+a day or longer; shorter-lived ones are not hit, and a warning lists them.
+Assumptions and limits are in the `daughters.py` docstring.
+
 `isotopia_compat.compat_inventory(st)` reproduces the port's own equations,
 defects included, with the same matrix machinery. It exists to check the
 solver against the port and is not a physics model.
 
-Tests: `tests/test_matrix.py` (decay) and `tests/test_irradiation.py`
+Tests: `tests/test_matrix.py` (decay), `tests/test_irradiation.py`
 (closed-form irradiation cases; compatibility mode against the port on every
 sample; full mode against the port for products that neither code feeds by
-decay). Run them with `python -m pytest`.
+decay) and `tests/test_daughters.py` (multiple hits: closed forms, the rebuilt
+weights against every port rate, perturbation theory on p + Mo-100). The
+Mo-100 hit tests need the daughters' library folders (`p/Mo099`, `p/Tc099`,
+...). Run them with `python -m pytest`.
 
 ## Checking against the Fortran
 
 ```bash
-python scripts/run_samples.py                 # all samples vs isotopia/samples/*/org
+python scripts/run_samples.py                 # all samples vs samples/*/org
 python scripts/run_samples.py p-Mo100-Tc099m  # one sample
 python scripts/run_samples.py --ref runs/fortran   # vs your own Fortran runs
 pytest                                        # same, plus unit tests
