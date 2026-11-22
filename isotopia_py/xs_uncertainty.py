@@ -484,7 +484,11 @@ class MatrixSolver:
         if st.flagnatural:
             raise NotImplementedError("natural targets are not implemented yet")
         self.st, self.di, self._irradiate, self._Reactions = st, di, irradiate, Reactions
-        self.library = DecayLibrary()
+        # The decay data next to files/abundance, found as the port finds them
+        # (inputdeck.data_directories): this also works when files/ is inside the repository,
+        # which decaylib.default_decay_dir does not look for yet.
+        from .inputdeck import data_directories
+        self.library = DecayLibrary(Path(data_directories()[0]) / "files" / "decay")
         self.irr = Irradiation.from_state(st)
         self.warnings: list[str] = []
         if window is None:

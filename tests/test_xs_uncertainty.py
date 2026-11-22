@@ -6,7 +6,6 @@ without it, like tests/test_samples.py).
 """
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +15,7 @@ import pytest
 
 from isotopia_py import xs_uncertainty as xu
 from isotopia_py.daughters import RateGrid
+from isotopia_py.inputdeck import data_directories
 from isotopia_py.route_compare import compare_routes
 
 # ------------------------------------------------------------------------------------
@@ -219,10 +219,10 @@ def test_comparison_keeps_the_more_cautious_model(tmp_path):
 # The p-Mo100-Tc099m sample (needs the library)
 # ------------------------------------------------------------------------------------
 
-ROOT = Path(__file__).resolve().parents[1]
-ISOTOPIA = Path(os.environ.get("ISOTOPIA_DIR") or ROOT.parent / "isotopia")
+# Data folders as the code finds them (same as tests/test_samples.py): environment
+# variables, else inside this repository, else the Fortran's sibling folders.
+ISOTOPIA, LIBS = (Path(d) for d in data_directories())
 SAMPLE = ISOTOPIA / "samples" / "p-Mo100-Tc099m" / "org" / "isotopia.inp"
-LIBS = Path(os.environ.get("ISOTOPIA_LIBS") or ISOTOPIA.parent / "isotopia.libs")
 needs_library = pytest.mark.skipif(not (SAMPLE.is_file() and (LIBS / "p" / "Mo100").is_dir()),
                                    reason="needs ISOTOPIA samples and isotopia.libs/p/Mo100")
 
