@@ -14,8 +14,8 @@ channel c present in both routes (same library file):
 
 which is the sandwich rule of xs_uncertainty.rate_uncertainty with the two routes'
 weights. In relative terms, cov_AB = sum_c s_c^A s_c^B cov(R_c^A, R_c^B) / (R_c^A R_c^B).
-Different channels of the same target add channel_correlation * s s' r r' (0 by default);
-channels of different targets are independent.
+Different channels of the same hit nuclide (same library folder) add
+channel_correlation * s s' r r' (0 by default); other channels are independent.
 
 Why two correlation models. For ONE route, "full" energy correlation is the cautious
 choice (largest band). For a COMPARISON of two windows on the same curve it is the
@@ -105,7 +105,7 @@ def _covariance(a: DIUncertainty, ta: int, b: DIUncertainty, tb: int,
     for ca in a.channels:
         for cb in b.channels:
             sa, sb = ca.sensitivity[ta], cb.sensitivity[tb]
-            pa, pb = ca.rate.channel.path, cb.rate.channel.path
+            pa, pb = ca.rate.channel.spec.path, cb.rate.channel.spec.path
             if ca.rate.R <= 0 or cb.rate.R <= 0:
                 continue
             if pa == pb:
@@ -113,7 +113,7 @@ def _covariance(a: DIUncertainty, ta: int, b: DIUncertainty, tb: int,
                 rho = st.rho(ca.rate.E, cb.rate.E, model)
                 c = float(ca.rate.wdsigma @ rho @ cb.rate.wdsigma)
                 cov += sa * sb * c / (ca.rate.R * cb.rate.R)
-                shared.append(_label(ca.rate.channel.key))
+                shared.append(ca.rate.channel.spec.name)
             elif st.channel_correlation and Path(pa).parent == Path(pb).parent:
                 # Different channels of the same target and projectile (one model calculation)
                 ra = np.sqrt(float(ca.rate.wdsigma @ st.rho(ca.rate.E, ca.rate.E, model)

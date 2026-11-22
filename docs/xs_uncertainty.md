@@ -1,6 +1,6 @@
 # Cross-section uncertainty propagation (MIDAS extension 6)
 
-Branch `feature/xs-uncertainty`, based on `main` at `256eee9`. Author: Abby, with Claude.
+Branch `feature/xs-uncertainty`, up to date with `main` at `683df9e` (matrix solver with double hitting, and layered targets, merged). Author: Abby, with Claude.
 
 This extension attaches a cross-section uncertainty to the amount of the desired isotope
 (DI) produced by a route, and uses it to decide whether one route really beats another.
@@ -38,7 +38,15 @@ print(compare_routes(res, xu.di_uncertainty(st_b, (43, 99, 1))))
 ```
 
 Or run the example: `python scripts/xs_uncertainty_example.py --tendl 0.3`
-(`--solver matrix` uses Nate's solver once `feature/matrix-solver` is merged).
+(`--solver matrix` uses Nate's matrix solver; `--solver hits` adds double hitting).
+
+With double hitting (every product inside a window around the target is hit too):
+
+```python
+from isotopia_py.daughters import Window
+res = xu.di_uncertainty(st, (43, 99, 1), solver="hits",
+                        window=Window(A_below=2, A_above=1, Z_below=1, Z_above=1))
+```
 
 Survey which library files carry their own uncertainty:
 `python scripts/survey_xs_uncertainty.py --projectile p --target Mo100 > survey.csv`
@@ -57,7 +65,8 @@ the places that use them are marked `USER INPUT`.
 | 2 | `channel_correlation` | `0.0` | Different channels are independent | You |
 | 3 | `comparison_sigma` | `2.0` | A route "wins" only beyond 2 standard deviations | You with Rome |
 | 4 | `correlation_length` (MeV) | `2.0` | Used for the exponential correlation model in route comparisons | You |
-| 5 | Solver: `di_uncertainty(..., solver="port" or "matrix")` | `"port"` | Uncertainties follow the port's kinetics | Team, with Nate |
+| 5 | Solver: `di_uncertainty(..., solver="port", "matrix" or "hits")` | `"port"` | Uncertainties follow the port's kinetics | Team, with Nate |
+| 7 | `window` for `solver="hits"` (`daughters.Window`) | none | Required for double hitting | Same window as the route search uses |
 | 6 | Natural targets (`mass 0`) | not supported | `NotImplementedError` | Team: needed or not? |
 
 ### How to find the answers
@@ -96,8 +105,11 @@ judgement. A physical guide is the width of the features of an excitation functi
 MeV). Test 1, 2 and 5 MeV and check whether any verdict changes.
 
 **5. Solver.** Uncertainties should come from the solver that produces the numbers MIDAS
-reports. Ask Nate whether the route search will use the port's kinetics or his matrix
-solver.
+reports. Ask Nate and Rome whether the route search will use the port's kinetics, the
+matrix solver, or the matrix solver with double hitting ("hits").
+
+**7. Window.** With `solver="hits"`, use exactly the `Window` the route search uses for
+that route, so the uncertainty describes the same network as the reported number.
 
 **6. Natural targets.** The port runs one isotope at a time and keeps only the last in the
 State. Supporting natural targets means computing the uncertainty inside `run.natural`'s
@@ -118,7 +130,10 @@ true value is within +-5% about 68% of the time.
 
 ### 3.2 The reaction rate is a weighted sum of cross sections
 
-The port computes every rate on an energy grid (`rates._reactionrates`):
+The port computes every rate on an energy grid (`rates._reactionrates`). Nate's
+`daughters.rate_grid` rebuilds that grid and its weights from the port's own functions,
+and `daughters.check_rate_grid` confirms they reproduce every rate of the run. This
+extension uses that grid, so it changes nothing inside the port:
 
 $$R_c = s \sum_k w_k\,\sigma_{c,k}\times10^{-27}$$
 
@@ -267,7 +282,7 @@ measurements where they exist and default elsewhere [Kon19]. The files give no u
 and TALYS itself produces none: its companion code TASMAN does, by rerunning TALYS with
 varied parameters [Kon26d], which is too expensive to do for every channel. So a default
 relative uncertainty is applied (input 1), and every channel using it is named in the
-warnings.
+warnings. Channels with sensitivity below 1e-4 at both times are summarised in one line.
 
 **EXFOR: not propagated, but useful for choosing the default.** The raw measurements are
 already folded into the IAEA evaluations and into TENDL's tuning. Using them directly would
@@ -296,36 +311,42 @@ non-medical routes the TENDL default will therefore decide most results, which i
 | `isotopia_py/xs_uncertainty.py` | new | reader, rate uncertainty, DI propagation, report |
 | `isotopia_py/xs_uncertainty_defaults.json` | new | settings and the user inputs |
 | `isotopia_py/route_compare.py` | new | comparison of two routes with shared-data covariance |
-| `isotopia_py/rates.py` | **edited** (5 lines) | keeps the rate grid and weights in `st.rate_grid` |
-| `isotopia_py/state.py` | **edited** (3 lines) | adds the `rate_grid` field |
 | `scripts/survey_xs_uncertainty.py` | new | which library files have dxs, and over which energies |
 | `scripts/xs_uncertainty_example.py` | new | Tc-99m example and a two-route comparison |
-| `tests/test_xs_uncertainty.py` | new | 12 tests (section 6) |
+| `tests/test_xs_uncertainty.py` | new | 14 tests (section 6) |
 
-Not edited: `data.py`, `kinetics.py`, `output.py`, and none of the teammates' modules. The
-port still reads its two columns exactly as before, so it still matches the Fortran.
+**No existing module is edited.** The grid comes from Nate's `daughters.rate_grid`, and
+the solvers are called, not changed. The port still reads its two columns exactly as
+before, so it still matches the Fortran. One dependency to flag to Nate: the hit-network
+solver uses his private helper `daughters._residual_files` to find a hit nuclide's
+library files; if he renames it, `MatrixSolver` needs the same change.
 
 ### 5.2 Data flow
 
 ```
-run(lines) --------------------------------------------------> State (as before)
-   rates._reactionrates  --> st.rate_grid (E_k, w_k, scale)        |
-                                                                    v
-di_uncertainty(st, DI, solver)
-   1. solver.base_rates()          which rates can feed the DI
-   2. rate_uncertainty(st, key)    per channel:
+run(lines) ------------------------------------------------> State (unchanged)
+                                                                  |
+di_uncertainty(st, DI, solver)                                    v
+   0. daughters.rate_grid(st)      grid E_k, weights w_k, scale; checked against the port
+   1. solver.channels()            channels (hit -> product) that can feed the DI
+   2. rate_uncertainty(...)        per channel:
         load_channel  -> reads the file again with dxs, applies the decision table
-        sandwich rule -> R, dR, source shares; self-check R == st.reaction_rate[key]
-   3. solver.di_atoms(rates)       rerun with one rate +-h  -> sensitivities s_c(t)
+        sandwich rule -> R, dR, source shares; self-check R == the solver's rate
+   3. solver.di_atoms({c: 1+-h})   rerun with one rate scaled -> sensitivities s_c(t)
    4. combine                      (dN/N)^2 at every output time; ranking by variance
    -> DIUncertainty --> report() / compare_routes()
 ```
 
 ### 5.3 The pieces
 
-**`RateGrid`** (filled by `rates.py`). The grid energies, the weights and the scale, built
-from the port's local lists so that `scale * sum(w * sigma) * 1e-27` is exactly the port's
-sum. This one hook is the only change inside the port.
+**Rate grid** (`daughters.rate_grid`, Nate's). The grid energies, the weights and the
+scale, so that `scale * sum(w * sigma) * 1e-27` is the port's sum. `di_uncertainty`
+calls `check_rate_grid` first, which stops with an error if the weights do not reproduce
+the port's rates.
+
+**`ChannelSpec`**. One channel: the nuclide hit, the product, its library file and the
+rate the solver uses. For the target the file is the one `data.crosssections` reads (or
+an `xsfile` override); for a hit product it is that nuclide's own residual file.
 
 **`read_xs_file`, `load_channel`**. Read every column and the header, interpolate xs and
 dxs onto the grid with the port's rule (zero outside the file's range), and apply the
@@ -334,25 +355,27 @@ crash, so a route search can still run.
 
 **`rate_uncertainty`**. The sandwich rule (section 3.3), the share of the rate from each
 data source, and a **self-check**: the rebuilt rate must equal the port's
-`st.reaction_rate[key]` to within 1e-3, otherwise a warning says the uncertainty would be
+rate the solver uses to within 1e-3, otherwise a warning says the uncertainty would be
 attached to a different number. It keeps the per-point contributions a_k so that route
 comparisons need no second file read.
 
-**Solvers.** `di_uncertainty` only needs three things from a solver: which rates can feed
-the DI, their current values, and the DI atoms for a given set of rates (a Python
-`Protocol`, i.e. an agreed list of methods).
+**Solvers.** `di_uncertainty` only needs two things from a solver: the channels that can
+feed the DI, and the DI atoms when some channels' rates are scaled (a Python `Protocol`,
+i.e. an agreed list of methods).
 
 - `PortSolver` uses the port's `kinetics.equations`. Candidates follow the port's own rule:
   the DI plus its beta-minus parent (Z-1) or beta-plus parent (Z+1) of the same mass, using
   `st.rtyp`. To rerun, it changes one entry of `st.reaction_rate`, runs `equations`, reads
   the DI, then restores the rates and runs `equations` once more, which puts the State back
   exactly (a test checks this).
-- `MatrixSolver` uses Nate's `irradiation.irradiate`. Every decay branch feeds the DI there,
-  so the candidates are the DI and all its ancestors, found by walking the decay matrix
-  upstream. One rate is changed with `dataclasses.replace(irr, rates=...)`, which makes a
-  modified copy of Nate's `Irradiation` object; his code is not edited. Key conversion:
-  Nate uses (Z, A, I); the port uses (Z, A, -1) for a nuclide without isomers.
-  `port_key` translates.
+- `MatrixSolver` uses Nate's `irradiation.irradiate`. With `solver="matrix"` only the
+  target is hit; with `solver="hits"` every nuclide in the window is hit too
+  (`daughters.hit_reactions`). The candidate channels are those whose product is the DI or
+  one of its ancestors, found by walking the network matrix A + R (decay and reactions)
+  upstream from the DI. One rate is scaled per rerun on a copy of the reactions
+  dictionary; Nate's code is not edited. Burnup (loss) rates stay fixed, because the
+  non-elastic cross section is not propagated. Key conversion: Nate uses (Z, A, I); the
+  port uses (Z, A, -1) for a nuclide without isomers. `port_key` translates.
 
 **`di_uncertainty`**. Central finite differences, then the combination of section 3.4 at
 every output time. `np.einsum("it,ij,jt->t", u, rho, u)` computes the double sum
@@ -360,7 +383,7 @@ sum_i sum_j u_i rho_ij u_j separately for each time t in one step.
 
 **`report`**. Amount +- % at the end of irradiation and after cooling, data-quality shares,
 the ranking table (dR/R, sensitivity and variance share per channel at both times), and all
-warnings.
+warnings. Channels with sensitivity below 1e-4 at both times are summarised in one line.
 
 **`compare_routes`**. Section 3.5. Channels are "the same" when both routes read the same
 library file. It returns the ratio, ln(ratio) +- sd, the sd under each correlation model,
@@ -393,11 +416,13 @@ the error correlation, the shared channels and the verdict.
 | two channels, N = 3 R_1 + R_2 | s = 0.75 and 0.25; dN/N = hypot(0.75 x 5%, 0.25 x 20%); ranking order | pass |
 | same curve, two windows, full correlation, constant dsigma/sigma | sd of ln(ratio) = 0 | pass |
 | 2% difference, exponential model | larger sd kept; verdict tie | pass |
-| p-Mo100-Tc099m sample (needs the library) | R = port R; 100% IAEA; 4% < dN/N < 5%; State restored | pass |
+| p-Mo100-Tc099m sample, port (needs the library) | R = port R; 100% IAEA; 4% < dN/N < 5%; State restored | pass |
+| same sample, matrix solver | same dN/N at EOI as the port (within 2%) | pass |
+| same sample, double hitting (window 2/1/1/1) | second-hit channels found; no self-check warning | pass |
 
 Regression: with the team's reference outputs (`MIDAS-22-033/isotopia_midas`), the
 samples p-Mo100-Tc099m, p-Ga069-Ge068 and n-Lu176-Lu177 pass on this branch exactly as on
-`main`. So the `rates.py` hook changes no number. (Only samples whose library data I had
+`main`, as they must, since no port module is edited. (Only samples whose library data I had
 were run; please run the full `pytest` with the complete library before merging.)
 
 ### 6.2 Results on the sample routes
@@ -409,6 +434,7 @@ still open.
 |---|---|---|---|---|---|
 | p + Mo-100, 16 -> 12 MeV, port | Tc-99m | 4.55% | 4.55% | IAEA 100% | Mo-99 feeds 1.7%; the port has no Mo-99 ingrowth in cooling (defect 4) |
 | same, Nate's solver | Tc-99m | 4.56% | 3.89% | IAEA 100% | with ingrowth, Mo-99 makes 23% of the Tc-99m after cooling |
+| same, with double hitting | Tc-99m | 4.56% | 3.89% | IAEA 100% | 15 second-hit channels found, each with sensitivity below 1e-4 for a 1-day irradiation |
 | p + Mo-100, 30 -> 20 MeV, port | Tc-99m | 4.92% | 4.92% | IAEA 100% | Mo-99 now 27% of production |
 | p + Ga-69, 25 -> 15 MeV, port | Ge-68 | 11.34% | 11.34% | IAEA 100% | |
 | n + Lu-176, port | Lu-177 | 25.0% | 25.0% | TENDL 100% | entirely the default; LOWER BOUND (0%) if the default is not set |
@@ -419,8 +445,8 @@ Route comparison, Tc-99m from p + Mo-100 (port):
 
 | A vs B | ratio A/B | sd, full | sd, exponential | verdict |
 |---|---|---|---|---|
-| 16 -> 12 vs 20 -> 16 MeV | 0.854 | 0.004 | 0.041 | B better |
-| 16 -> 12 vs 30 -> 20 MeV | 0.686 | 0.015 | 0.044 | B better |
+| 16 -> 12 vs 20 -> 16 MeV | 0.859 | 0.004 | 0.041 | B better |
+| 16 -> 12 vs 30 -> 20 MeV | 0.694 | 0.015 | 0.044 | B better |
 
 How the comparison depends on the correlation model (16 -> 12 vs 20 -> 16 MeV):
 
@@ -440,29 +466,29 @@ routes closer than a few percent, the choice of L (input 4) decides between "bet
 
 ## 7. How it fits the other extensions
 
-**Nate, matrix solver (`feature/matrix-solver`).** Works now through `MatrixSolver`, tested
-by merging his branch locally: same Tc-99m result at EOI, and the Mo-99 ingrowth correctly
-shows up after cooling. When products can be hit again, nothing changes here as long as each
-hit nuclide's rates stay in a dictionary the way the target's do (`Reactions`); the
-candidate list then needs the reaction parents of the DI as well as its decay parents. His
-test suite has failures in my environment that also happen on his branch alone: they come
-from my partial copy of the library, not from this code.
+**Nate, matrix solver and double hitting (in `main`).** Both work through `MatrixSolver`:
+`solver="matrix"` for target reactions only, `solver="hits"` with his `Window` and
+`hit_reactions`. The rate grid is his `daughters.rate_grid`, so there is one grid
+implementation in the code, not two. Tested on `main` at `683df9e`: same Tc-99m result
+at EOI as the port, Mo-99 ingrowth after cooling, and second-hit channels found. Some of
+his own tests fail in my environment; they fail the same way on `main` alone, because my
+copy of the library is partial.
 
-**Aaron, layered targets (`Layered-targets`).** His `_reactionrates` keeps the same
-variables (`Eint`, `dEint`, `phi`, `G`) at the same place, so the 5-line hook should merge
-with at most a small conflict: put the hook after his self-shielding block. Layers in front
+**Aaron, layered targets (in `main`).** Nothing of his is edited. The rate grid comes from
+the same `_charged_particle_spectrum` his stopping-power work feeds (SRIM or Bethe-Bloch),
+so the weights automatically follow his stopping model. Layers in front
 of the target only change the energy entering it, which the grid already reflects. Isotope
 production in the layers is a separate run per layer, so each layer gets its own
 uncertainty the same way. Stopping-power uncertainty (SRIM versus Bethe-Bloch, which he
 measured at 2.7% on Tc-99m) is not included yet.
 
-**Rome, route search (`looping-optimization-solver`).** His `run_one` runs the port and
+**Rome, route search (in `main`, `scripts/`).** His `run_one` runs the port and
 reads `st.Niso` for the DI. The natural place to add uncertainty is right there: call
 `xs_uncertainty.di_uncertainty(st, di)`, write `rel` at EOI and at end of cooling into
 `scan.csv`, and run `compare_routes` on the best few routes. Our relative uncertainty
 applies unchanged to his mass metric.
 
-**Brett, economics and hazard (`test-case-updates`).** No dependency. The "tie" verdicts
+**Brett, economics and hazard (in `main`).** No dependency. The "tie" verdicts
 are where rarity and hazard should decide.
 
 ---
@@ -472,12 +498,13 @@ are where rarity and hazard should decide.
 - **TENDL default not chosen yet** (input 1). Until it is, TENDL-dominated results are
   lower bounds.
 - Natural targets are not supported (input 6).
-- Not propagated: decay data, stopping power, the non-elastic (burn-up) cross section,
-  impurities.
+- Not propagated: decay data, stopping power, the non-elastic (burnup) cross sections
+  (including the burnup of the DI itself when it is hit), impurities.
 - The energy correlation inside IAEA files is assumed, not known.
 - Possible next steps: compare TENDL with EXFOR to justify the default; run TASMAN for the
-  TENDL channels of the top routes; add the stopping-power term once Aaron's layers are
-  merged; extend the solver candidates to reaction parents when double hitting lands.
+  TENDL channels of the top routes; add the stopping-power term (Aaron's SRIM versus
+  Bethe-Bloch comparison is a starting point); propagate burnup cross sections for long
+  irradiations where they matter.
 
 ---
 

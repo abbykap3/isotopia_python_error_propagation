@@ -392,12 +392,6 @@ def _reactionrates(st: State) -> None:
                 G[nE] = (S(1) - sexp(-term)) / term
             st.selfshield_av = st.selfshield_av + G[nE] * phi[nE]
 
-    # Not in the Fortran: keep the integration grid and weights of the rate integral below,
-    # so xs_uncertainty.py can propagate cross-section uncertainties. Changes no number.
-    from .xs_uncertainty import RateGrid
-    st.rate_grid = RateGrid.from_port(k0, Eint, dEint, phi, G,
-                                      projrate_density if k0 > 1 else st.fluxtotal)
-
     # Loop over residual nuclides, then the total non-elastic (0, 0, -1)
     keys = [(iz, ia, is_)
             for iz in range(st.Zcomp + 1, st.Zcomp - st.Zdepth - 1, -1)
